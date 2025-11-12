@@ -9,7 +9,7 @@ export async function GET() {
     headers: await headers(),
   });
 
-  if (!session) {
+  if (!session || session.user.email != process.env.GOOGLE_EMAIL) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
