@@ -28,6 +28,7 @@ Make sure to copy the client id and client secret somewhere safe.
     - SSH_USER=user
     - SSH_PASSWORD=pwd
     - GOOGLE_EMAIL=allowed_access_google_email
+    - NODE_EXPORTER_URL=http://vps-ip:9100/metrics ([install instructions here](https://prometheus.io/docs/guides/node-exporter/))
 9. Go to your forked GitHub stats project's Settings, e.g. https://github.com/your-username/stats/settings.
 10. Go to Secrets and variables -> Actions and add two repository secrets:
     1. COOLIFY_API_TOKEN to the token you generate at your Coolify dashboard at Keys & Tokens. e.g. http://vps-ip:8000/security/private-key. Make sure to set read and deploy permissions and save this in your notes because you won't see it again!
