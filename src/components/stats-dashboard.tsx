@@ -122,13 +122,13 @@ export function StatsDashboard() {
     return ((used / total) * 100).toFixed(1);
   };
 
-  const getPaginatedData = (data: Array<{ name: string; value: number }>, page: number) => {
+  const getPaginatedData = <T extends { name: string; value: number }>(data: Array<T>, page: number) => {
     const start = page * itemsPerPage;
     const end = start + itemsPerPage;
     return data.slice(start, end);
   };
 
-  const getTotalPages = (data: Array<{ name: string; value: number }>) => {
+  const getTotalPages = <T extends { name: string; value: number }>(data: Array<T>) => {
     return Math.ceil(data.length / itemsPerPage);
   };
 
