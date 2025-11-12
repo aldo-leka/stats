@@ -30,6 +30,11 @@ export function StatsDashboard() {
   const [stats, setStats] = useState<ServerStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [cpuPage, setCpuPage] = useState(0);
+  const [memPage, setMemPage] = useState(0);
+  const [diskPage, setDiskPage] = useState(0);
+  const itemsPerPage = 5;
 
   const fetchStats = async () => {
     try {
@@ -50,9 +55,13 @@ export function StatsDashboard() {
 
   useEffect(() => {
     fetchStats();
-    const interval = setInterval(fetchStats, 5000); // Refresh every 5 seconds
+    const interval = setInterval(() => {
+      if (autoRefresh) {
+        fetchStats();
+      }
+    }, 5000); // Refresh every 5 seconds
     return () => clearInterval(interval);
-  }, []);
+  }, [autoRefresh]);
 
   if (loading) {
     return (
@@ -90,8 +99,33 @@ export function StatsDashboard() {
     return ((used / total) * 100).toFixed(1);
   };
 
+  const getPaginatedData = (data: Array<{ name: string; value: number }>, page: number) => {
+    const start = page * itemsPerPage;
+    const end = start + itemsPerPage;
+    return data.slice(start, end);
+  };
+
+  const getTotalPages = (data: Array<{ name: string; value: number }>) => {
+    return Math.ceil(data.length / itemsPerPage);
+  };
+
   return (
     <div className="space-y-6">
+      {/* Auto-refresh toggle */}
+      <div className="flex justify-end">
+        <button
+          onClick={() => setAutoRefresh(!autoRefresh)}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg border transition-colors ${
+            autoRefresh
+              ? "bg-green-500/20 border-green-500/50 text-green-400 hover:bg-green-500/30"
+              : "bg-gray-700/50 border-gray-600 text-gray-400 hover:bg-gray-700"
+          }`}
+        >
+          <span>{autoRefresh ? "⏸" : "▶"}</span>
+          <span>{autoRefresh ? "Auto-refresh ON" : "Auto-refresh OFF"}</span>
+        </button>
+      </div>
+
       {/* Server Info */}
       <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-6">
         <h2 className="text-xl font-semibold text-white mb-4">Server Information</h2>
@@ -183,66 +217,153 @@ export function StatsDashboard() {
           {/* Top CPU Processes */}
           {stats.topProcesses.cpu.length > 0 && (
             <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-6">
-              <h3 className="text-lg font-semibold text-white mb-4">Top CPU Consumers</h3>
-              <div className="space-y-3">
-                {stats.topProcesses.cpu.map((proc, idx) => (
-                  <div key={idx} className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 flex-1 min-w-0">
-                      <div className="w-6 h-6 flex items-center justify-center bg-blue-500/20 rounded text-xs text-blue-400">
-                        {idx + 1}
-                      </div>
-                      <span className="text-sm text-gray-300 truncate">{proc.name}</span>
-                    </div>
-                    <span className="text-sm font-semibold text-blue-400 ml-2">
-                      {proc.value.toFixed(1)}%
-                    </span>
-                  </div>
-                ))}
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-white">Top CPU Consumers</h3>
+                <span className="text-xs text-gray-400">
+                  {stats.topProcesses.cpu.length} total
+                </span>
               </div>
+              <div className="space-y-3">
+                {getPaginatedData(stats.topProcesses.cpu, cpuPage).map((proc, idx) => {
+                  const actualIdx = cpuPage * itemsPerPage + idx;
+                  return (
+                    <div key={actualIdx} className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <div className="w-6 h-6 flex items-center justify-center bg-blue-500/20 rounded text-xs text-blue-400">
+                          {actualIdx + 1}
+                        </div>
+                        <span className="text-sm text-gray-300 truncate">{proc.name}</span>
+                      </div>
+                      <span className="text-sm font-semibold text-blue-400 ml-2">
+                        {proc.value.toFixed(1)}%
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              {getTotalPages(stats.topProcesses.cpu) > 1 && (
+                <div className="flex items-center justify-center gap-2 mt-4 pt-4 border-t border-gray-700">
+                  <button
+                    onClick={() => setCpuPage(Math.max(0, cpuPage - 1))}
+                    disabled={cpuPage === 0}
+                    className="px-3 py-1 rounded bg-gray-700 text-gray-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-gray-600 transition-colors text-sm"
+                  >
+                    ←
+                  </button>
+                  <span className="text-sm text-gray-400">
+                    Page {cpuPage + 1} of {getTotalPages(stats.topProcesses.cpu)}
+                  </span>
+                  <button
+                    onClick={() => setCpuPage(Math.min(getTotalPages(stats.topProcesses!.cpu) - 1, cpuPage + 1))}
+                    disabled={cpuPage >= getTotalPages(stats.topProcesses!.cpu) - 1}
+                    className="px-3 py-1 rounded bg-gray-700 text-gray-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-gray-600 transition-colors text-sm"
+                  >
+                    →
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
           {/* Top Memory Processes */}
           {stats.topProcesses.memory.length > 0 && (
             <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-6">
-              <h3 className="text-lg font-semibold text-white mb-4">Top Memory Consumers</h3>
-              <div className="space-y-3">
-                {stats.topProcesses.memory.map((proc, idx) => (
-                  <div key={idx} className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 flex-1 min-w-0">
-                      <div className="w-6 h-6 flex items-center justify-center bg-green-500/20 rounded text-xs text-green-400">
-                        {idx + 1}
-                      </div>
-                      <span className="text-sm text-gray-300 truncate">{proc.name}</span>
-                    </div>
-                    <span className="text-sm font-semibold text-green-400 ml-2">
-                      {formatBytes(proc.value)}
-                    </span>
-                  </div>
-                ))}
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-white">Top Memory Consumers</h3>
+                <span className="text-xs text-gray-400">
+                  {stats.topProcesses.memory.length} total
+                </span>
               </div>
+              <div className="space-y-3">
+                {getPaginatedData(stats.topProcesses.memory, memPage).map((proc, idx) => {
+                  const actualIdx = memPage * itemsPerPage + idx;
+                  return (
+                    <div key={actualIdx} className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <div className="w-6 h-6 flex items-center justify-center bg-green-500/20 rounded text-xs text-green-400">
+                          {actualIdx + 1}
+                        </div>
+                        <span className="text-sm text-gray-300 truncate">{proc.name}</span>
+                      </div>
+                      <span className="text-sm font-semibold text-green-400 ml-2">
+                        {formatBytes(proc.value)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              {getTotalPages(stats.topProcesses.memory) > 1 && (
+                <div className="flex items-center justify-center gap-2 mt-4 pt-4 border-t border-gray-700">
+                  <button
+                    onClick={() => setMemPage(Math.max(0, memPage - 1))}
+                    disabled={memPage === 0}
+                    className="px-3 py-1 rounded bg-gray-700 text-gray-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-gray-600 transition-colors text-sm"
+                  >
+                    ←
+                  </button>
+                  <span className="text-sm text-gray-400">
+                    Page {memPage + 1} of {getTotalPages(stats.topProcesses.memory)}
+                  </span>
+                  <button
+                    onClick={() => setMemPage(Math.min(getTotalPages(stats.topProcesses!.memory) - 1, memPage + 1))}
+                    disabled={memPage >= getTotalPages(stats.topProcesses!.memory) - 1}
+                    className="px-3 py-1 rounded bg-gray-700 text-gray-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-gray-600 transition-colors text-sm"
+                  >
+                    →
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
           {/* Top Disk I/O Processes */}
           {stats.topProcesses.disk.length > 0 && (
             <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-6">
-              <h3 className="text-lg font-semibold text-white mb-4">Top Disk I/O Consumers</h3>
-              <div className="space-y-3">
-                {stats.topProcesses.disk.map((proc, idx) => (
-                  <div key={idx} className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 flex-1 min-w-0">
-                      <div className="w-6 h-6 flex items-center justify-center bg-purple-500/20 rounded text-xs text-purple-400">
-                        {idx + 1}
-                      </div>
-                      <span className="text-sm text-gray-300 truncate">{proc.name}</span>
-                    </div>
-                    <span className="text-sm font-semibold text-purple-400 ml-2">
-                      {formatBytes(proc.value)}
-                    </span>
-                  </div>
-                ))}
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-white">Top Disk I/O Consumers</h3>
+                <span className="text-xs text-gray-400">
+                  {stats.topProcesses.disk.length} total
+                </span>
               </div>
+              <div className="space-y-3">
+                {getPaginatedData(stats.topProcesses.disk, diskPage).map((proc, idx) => {
+                  const actualIdx = diskPage * itemsPerPage + idx;
+                  return (
+                    <div key={actualIdx} className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <div className="w-6 h-6 flex items-center justify-center bg-purple-500/20 rounded text-xs text-purple-400">
+                          {actualIdx + 1}
+                        </div>
+                        <span className="text-sm text-gray-300 truncate">{proc.name}</span>
+                      </div>
+                      <span className="text-sm font-semibold text-purple-400 ml-2">
+                        {formatBytes(proc.value)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              {getTotalPages(stats.topProcesses.disk) > 1 && (
+                <div className="flex items-center justify-center gap-2 mt-4 pt-4 border-t border-gray-700">
+                  <button
+                    onClick={() => setDiskPage(Math.max(0, diskPage - 1))}
+                    disabled={diskPage === 0}
+                    className="px-3 py-1 rounded bg-gray-700 text-gray-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-gray-600 transition-colors text-sm"
+                  >
+                    ←
+                  </button>
+                  <span className="text-sm text-gray-400">
+                    Page {diskPage + 1} of {getTotalPages(stats.topProcesses.disk)}
+                  </span>
+                  <button
+                    onClick={() => setDiskPage(Math.min(getTotalPages(stats.topProcesses!.disk) - 1, diskPage + 1))}
+                    disabled={diskPage >= getTotalPages(stats.topProcesses!.disk) - 1}
+                    className="px-3 py-1 rounded bg-gray-700 text-gray-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-gray-600 transition-colors text-sm"
+                  >
+                    →
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>

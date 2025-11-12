@@ -55,40 +55,54 @@ export async function GET() {
     const diskTotal = parseInt(diskLine[1].replace("G", "")) || 0;
     const diskUsed = parseInt(diskLine[2].replace("G", "")) || 0;
 
-    // Get top CPU processes from Docker
+    // Get top CPU processes from Docker containers
     const dockerCpuResult = await ssh.execCommand(
-      'docker stats --no-stream --format "{{.Name}}\\t{{.CPUPerc}}" | sort -k2 -rn | head -5'
+      'docker stats --no-stream --format "{{.Name}}\\t{{.CPUPerc}}" 2>/dev/null || echo ""'
     );
-    console.log("Docker CPU output:", dockerCpuResult.stdout);
-    console.log("Docker CPU error:", dockerCpuResult.stderr);
-
-    const topCpuProcesses = dockerCpuResult.stdout
+    const dockerCpuProcesses = dockerCpuResult.stdout
       .split("\n")
       .filter((line) => line.trim())
       .map((line) => {
         const [name, cpu] = line.split("\t");
         return {
-          name: name.trim(),
-          value: parseFloat(cpu.replace("%", "")) || 0,
+          name: `[docker] ${name?.trim() || "unknown"}`,
+          value: parseFloat(cpu?.replace("%", "") || "0") || 0,
         };
       })
       .filter((p) => p.value > 0);
 
-    console.log("Parsed CPU processes:", topCpuProcesses);
-
-    // Get top memory processes from Docker
-    const dockerMemResult = await ssh.execCommand(
-      'docker stats --no-stream --format "{{.Name}}\\t{{.MemUsage}}" | head -5'
+    // Get top CPU processes from system
+    const cpuProcessResult = await ssh.execCommand(
+      "ps aux --sort=-%cpu | head -11 | tail -10 | awk '{print $11, $3}'"
     );
-    console.log("Docker Mem output:", dockerMemResult.stdout);
-    console.log("Docker Mem error:", dockerMemResult.stderr);
+    const systemCpuProcesses = cpuProcessResult.stdout
+      .split("\n")
+      .filter((line) => line.trim())
+      .map((line) => {
+        const parts = line.trim().split(/\s+/);
+        const cpu = parseFloat(parts[parts.length - 1]) || 0;
+        const name = parts.slice(0, -1).join(" ") || "unknown";
+        return {
+          name: name,
+          value: cpu,
+        };
+      })
+      .filter((p) => p.value > 0);
 
-    const topMemProcesses = dockerMemResult.stdout
+    // Combine and sort both Docker and system processes
+    const topCpuProcesses = [...dockerCpuProcesses, ...systemCpuProcesses]
+      .sort((a, b) => b.value - a.value);
+
+    // Get top memory processes from Docker containers
+    const dockerMemResult = await ssh.execCommand(
+      'docker stats --no-stream --format "{{.Name}}\\t{{.MemUsage}}" 2>/dev/null || echo ""'
+    );
+    const dockerMemProcesses = dockerMemResult.stdout
       .split("\n")
       .filter((line) => line.trim())
       .map((line) => {
         const [name, mem] = line.split("\t");
-        const memMatch = mem.match(/([0-9.]+)([KMG]iB)/);
+        const memMatch = mem?.match(/([0-9.]+)([KMG]iB)/);
         if (!memMatch) return null;
 
         let memBytes = parseFloat(memMatch[1]);
@@ -99,30 +113,48 @@ export async function GET() {
         else if (unit === "KiB") memBytes *= 1024;
 
         return {
-          name: name.trim(),
+          name: `[docker] ${name?.trim() || "unknown"}`,
           value: memBytes,
         };
       })
-      .filter((p) => p !== null)
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 5) as Array<{ name: string; value: number }>;
+      .filter((p): p is { name: string; value: number } => p !== null && p.value > 0);
 
-    console.log("Parsed Mem processes:", topMemProcesses);
+    // Get top memory processes from system
+    const memProcessResult = await ssh.execCommand(
+      "ps aux --sort=-%mem | head -11 | tail -10 | awk '{print $11, $4}'"
+    );
+    const systemMemProcesses = memProcessResult.stdout
+      .split("\n")
+      .filter((line) => line.trim())
+      .map((line) => {
+        const parts = line.trim().split(/\s+/);
+        const memPercent = parseFloat(parts[parts.length - 1]) || 0;
+        const name = parts.slice(0, -1).join(" ") || "unknown";
+        // Convert percentage to bytes based on total memory
+        const memBytes = (memPercent / 100) * (memTotal * 1024 * 1024);
+        return {
+          name: name,
+          value: memBytes,
+        };
+      })
+      .filter((p) => p.value > 0);
+
+    // Combine and sort both Docker and system processes
+    const topMemProcesses = [...dockerMemProcesses, ...systemMemProcesses]
+      .sort((a, b) => b.value - a.value);
 
     // Get disk I/O from Docker containers
     const dockerDiskResult = await ssh.execCommand(
-      'docker stats --no-stream --format "{{.Name}}\\t{{.BlockIO}}"'
+      'docker stats --no-stream --format "{{.Name}}\\t{{.BlockIO}}" 2>/dev/null || echo ""'
     );
-    console.log("Docker Disk output:", dockerDiskResult.stdout);
-    console.log("Docker Disk error:", dockerDiskResult.stderr);
-
-    const topDiskProcesses = (dockerDiskResult.stdout
+    const dockerDiskProcesses = dockerDiskResult.stdout
       .split("\n")
       .filter((line) => line.trim())
       .map((line) => {
         const [name, blockIO] = line.split("\t");
+        if (!blockIO) return null;
         // BlockIO format is like "1.2MB / 3.4MB" (read / write)
-        const ioMatch = blockIO?.match(/([0-9.]+)([kKMGT]?B)\s*\/\s*([0-9.]+)([kKMGT]?B)/);
+        const ioMatch = blockIO.match(/([0-9.]+)([kKMGT]?B)\s*\/\s*([0-9.]+)([kKMGT]?B)/);
         if (!ioMatch) return null;
 
         const readValue = parseFloat(ioMatch[1]);
@@ -130,27 +162,27 @@ export async function GET() {
         const writeValue = parseFloat(ioMatch[3]);
         const writeUnit = ioMatch[4];
 
-        // Convert to bytes and sum read + write
         const convertToBytes = (value: number, unit: string) => {
-          if (unit === "TB") return value * 1024 * 1024 * 1024 * 1024;
-          if (unit === "GB") return value * 1024 * 1024 * 1024;
-          if (unit === "MB") return value * 1024 * 1024;
-          if (unit === "kB" || unit === "KB") return value * 1024;
-          return value; // Assume bytes
+          if (unit === "TB" || unit === "TiB") return value * 1024 * 1024 * 1024 * 1024;
+          if (unit === "GB" || unit === "GiB") return value * 1024 * 1024 * 1024;
+          if (unit === "MB" || unit === "MiB") return value * 1024 * 1024;
+          if (unit === "kB" || unit === "KB" || unit === "KiB") return value * 1024;
+          return value;
         };
 
         const totalBytes = convertToBytes(readValue, readUnit) + convertToBytes(writeValue, writeUnit);
 
         return {
-          name: name.trim(),
+          name: `[docker] ${name?.trim() || "unknown"}`,
           value: totalBytes,
         };
       })
-      .filter((p): p is { name: string; value: number } => p !== null && p.value > 0) as Array<{ name: string; value: number }>)
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 5);
+      .filter((p): p is { name: string; value: number } => p !== null && p.value > 0);
 
-    console.log("Parsed Disk processes:", topDiskProcesses);
+    // Note: Getting per-process disk I/O for system processes requires root access
+    // Docker stats covers most disk activity on a containerized server
+    const topDiskProcesses = dockerDiskProcesses
+      .sort((a, b) => b.value - a.value);
 
     ssh.dispose();
 
@@ -179,7 +211,6 @@ export async function GET() {
     });
   } catch (error) {
     ssh.dispose();
-    console.error("Error fetching stats via SSH:", error);
     return NextResponse.json(
       { error: "Failed to fetch stats via SSH" },
       { status: 500 }
