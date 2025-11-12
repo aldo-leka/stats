@@ -30,7 +30,7 @@ export function StatsDashboard() {
   const [stats, setStats] = useState<ServerStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [autoRefresh, setAutoRefresh] = useState(false);
   const [cpuPage, setCpuPage] = useState(0);
   const [memPage, setMemPage] = useState(0);
   const [diskPage, setDiskPage] = useState(0);
@@ -55,13 +55,16 @@ export function StatsDashboard() {
 
   useEffect(() => {
     fetchStats();
+  }, []); // Only fetch once on mount
+
+  useEffect(() => {
+    if (!autoRefresh) return; // Don't set interval if auto-refresh is off
+
     const interval = setInterval(() => {
-      if (autoRefresh) {
-        fetchStats();
-      }
+      fetchStats();
     }, 5000); // Refresh every 5 seconds
     return () => clearInterval(interval);
-  }, [autoRefresh]);
+  }, [autoRefresh]); // Only re-run when autoRefresh changes
 
   if (loading) {
     return (

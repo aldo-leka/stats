@@ -36,29 +36,54 @@ export async function GET() {
       password: sshPassword,
     });
 
-    // Get CPU usage
-    const cpuResult = await ssh.execCommand(
-      "top -bn1 | grep 'Cpu(s)' | sed 's/.*, *\\([0-9.]*\\)%* id.*/\\1/' | awk '{print 100 - $1}'"
-    );
+    // Run all SSH commands in parallel for speed
+    const [
+      cpuResult,
+      memResult,
+      diskResult,
+      dockerCpuResult,
+      cpuProcessResult,
+      dockerMemResult,
+      memProcessResult,
+      dockerDiskResult
+    ] = await Promise.all([
+      ssh.execCommand(
+        "top -bn1 | grep 'Cpu(s)' | sed 's/.*, *\\([0-9.]*\\)%* id.*/\\1/' | awk '{print 100 - $1}'"
+      ),
+      ssh.execCommand("free -m"),
+      ssh.execCommand("df -BG / | tail -1"),
+      ssh.execCommand(
+        'docker stats --no-stream --format "{{.Name}}\\t{{.CPUPerc}}" 2>/dev/null || echo ""'
+      ),
+      ssh.execCommand(
+        "ps aux --sort=-%cpu | head -11 | tail -10 | awk '{print $11, $3}'"
+      ),
+      ssh.execCommand(
+        'docker stats --no-stream --format "{{.Name}}\\t{{.MemUsage}}" 2>/dev/null || echo ""'
+      ),
+      ssh.execCommand(
+        "ps aux --sort=-%mem | head -11 | tail -10 | awk '{print $11, $4}'"
+      ),
+      ssh.execCommand(
+        'docker stats --no-stream --format "{{.Name}}\\t{{.BlockIO}}" 2>/dev/null || echo ""'
+      ),
+    ]);
+
+    // Parse CPU usage
     const cpuUsage = parseFloat(cpuResult.stdout.trim()) || 0;
 
-    // Get memory usage
-    const memResult = await ssh.execCommand("free -m");
+    // Parse memory usage
     const memLines = memResult.stdout.split("\n");
     const memLine = memLines[1].split(/\s+/);
     const memTotal = parseInt(memLine[1]) || 0;
     const memUsed = parseInt(memLine[2]) || 0;
 
-    // Get disk usage
-    const diskResult = await ssh.execCommand("df -BG / | tail -1");
+    // Parse disk usage
     const diskLine = diskResult.stdout.split(/\s+/);
     const diskTotal = parseInt(diskLine[1].replace("G", "")) || 0;
     const diskUsed = parseInt(diskLine[2].replace("G", "")) || 0;
 
-    // Get top CPU processes from Docker containers
-    const dockerCpuResult = await ssh.execCommand(
-      'docker stats --no-stream --format "{{.Name}}\\t{{.CPUPerc}}" 2>/dev/null || echo ""'
-    );
+    // Parse Docker CPU processes
     const dockerCpuProcesses = dockerCpuResult.stdout
       .split("\n")
       .filter((line) => line.trim())
@@ -71,10 +96,7 @@ export async function GET() {
       })
       .filter((p) => p.value > 0);
 
-    // Get top CPU processes from system
-    const cpuProcessResult = await ssh.execCommand(
-      "ps aux --sort=-%cpu | head -11 | tail -10 | awk '{print $11, $3}'"
-    );
+    // Parse system CPU processes
     const systemCpuProcesses = cpuProcessResult.stdout
       .split("\n")
       .filter((line) => line.trim())
@@ -93,10 +115,7 @@ export async function GET() {
     const topCpuProcesses = [...dockerCpuProcesses, ...systemCpuProcesses]
       .sort((a, b) => b.value - a.value);
 
-    // Get top memory processes from Docker containers
-    const dockerMemResult = await ssh.execCommand(
-      'docker stats --no-stream --format "{{.Name}}\\t{{.MemUsage}}" 2>/dev/null || echo ""'
-    );
+    // Parse Docker memory processes
     const dockerMemProcesses = dockerMemResult.stdout
       .split("\n")
       .filter((line) => line.trim())
@@ -119,10 +138,7 @@ export async function GET() {
       })
       .filter((p): p is { name: string; value: number } => p !== null && p.value > 0);
 
-    // Get top memory processes from system
-    const memProcessResult = await ssh.execCommand(
-      "ps aux --sort=-%mem | head -11 | tail -10 | awk '{print $11, $4}'"
-    );
+    // Parse system memory processes
     const systemMemProcesses = memProcessResult.stdout
       .split("\n")
       .filter((line) => line.trim())
@@ -143,10 +159,7 @@ export async function GET() {
     const topMemProcesses = [...dockerMemProcesses, ...systemMemProcesses]
       .sort((a, b) => b.value - a.value);
 
-    // Get disk I/O from Docker containers
-    const dockerDiskResult = await ssh.execCommand(
-      'docker stats --no-stream --format "{{.Name}}\\t{{.BlockIO}}" 2>/dev/null || echo ""'
-    );
+    // Parse Docker disk I/O processes
     const dockerDiskProcesses = dockerDiskResult.stdout
       .split("\n")
       .filter((line) => line.trim())
