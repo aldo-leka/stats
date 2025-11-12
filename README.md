@@ -1,43 +1,97 @@
 # VPS Stats
 
-Fork this repo to get stats over your server such as CPU utilization, RAM usage and disk usage and their consumers ordered by high to low and paginated. Secured auth for one Gmail account at the moment so only you can access the stats.
+Monitor your VPS server with real-time stats for CPU utilization, RAM usage, disk usage, and top resource consumers. Features secure authentication restricted to a single Gmail account.
 
 ![Demo video](/demo/stats.gif)
 
-To follow the steps, I assume you have:
-- A VPS, by Hetzner for example.
-- Coolify installed on your VPS.
+## Prerequisites
 
-Steps to use this project:
-1. Create the stats project on your Coolify dashboard: http://vps-ip:8000/projects.
-2. Add a new resource.
-3. Select Docker Based -> Docker Image.
-4. Paste your forked repo image url like so:
-e.g. ghcr.io/your-username/stats:latest
-5. On the Coolify dashboard, set your domain where you will access the stats from.
-6. Go to Persistent Storage tab, and Add a Directory Mount. Leave the source path as is. Set the destination path as ```/app/data```. 
-7. Go to Google Cloud Console and add a project and create an OAuth 2.0 client.
-Make sure to copy the client id and client secret somewhere safe.
-8. (For prod) Set environment variables:
-    - NEXT_PUBLIC_APP_URL=domain_set_before
-    - GOOGLE_CLIENT_ID=google_client_id
-    - GOOGLE_CLIENT_SECRET=google_client_secret
-    - BETTER_AUTH_SECRET=generate_from_[better_auth_website](https://www.better-auth.com/docs/installation#set-environment-variables)
-    - SSH_HOST=vps_ip
-    - SSH_PORT=port
-    - SSH_USER=user
-    - SSH_PASSWORD=pwd
-    - GOOGLE_EMAIL=allowed_access_google_email
-    - NODE_EXPORTER_URL=http://DOCKER_GATEWAY_IP:9100/metrics (see node_exporter setup below)
-9. Go to your forked GitHub stats project's Settings, e.g. https://github.com/your-username/stats/settings.
-10. Go to Secrets and variables -> Actions and add two repository secrets:
-    1. COOLIFY_API_TOKEN to the token you generate at your Coolify dashboard at Keys & Tokens. e.g. http://vps-ip:8000/security/private-key. Make sure to set read and deploy permissions and save this in your notes because you won't see it again!
-    2. COOLIFY_WEBHOOK_URL to the URL you can find at your project's Coolify dashboard at the Webhooks tab -> Deploy Webhook.
-11. Run the pipeline in GitHub to build and deploy the project to your VPS and website.
+- A VPS (e.g., Hetzner)
+- [Coolify](https://coolify.io/) installed on your VPS
+
+## Setup Guide
+
+### 1. Configure Coolify Project
+
+1. Navigate to your Coolify dashboard at `http://vps-ip:8000/projects`
+2. Create a new stats project
+3. Add a new resource: **Docker Based → Docker Image**
+4. Paste your forked repo image URL:
+   ```
+   ghcr.io/your-username/stats:latest
+   ```
+5. Set your domain where you'll access the stats
+6. Go to **Persistent Storage** tab:
+   - Add a Directory Mount
+   - Leave the source path as default
+   - Set destination path: `/app/data`
+
+### 2. Configure Google OAuth
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a new project or select an existing one
+3. Create an OAuth 2.0 client
+4. Save the **Client ID** and **Client Secret** securely
+
+### 3. Set Environment Variables
+
+In your Coolify dashboard, configure these environment variables:
+
+**Application Settings:**
+```env
+NEXT_PUBLIC_APP_URL=https://your-domain.com
+GOOGLE_EMAIL=your-allowed-email@gmail.com
+```
+
+**Google OAuth:**
+```env
+GOOGLE_CLIENT_ID=your_google_client_id
+GOOGLE_CLIENT_SECRET=your_google_client_secret
+```
+
+**Authentication:**
+```env
+BETTER_AUTH_SECRET=generate_from_better_auth
+```
+> Generate at [Better Auth Documentation](https://www.better-auth.com/docs/installation#set-environment-variables)
+
+**SSH Configuration:**
+```env
+SSH_HOST=your_vps_ip
+SSH_PORT=22
+SSH_USER=your_ssh_user
+SSH_PASSWORD=your_ssh_password
+```
+
+**Node Exporter:**
+```env
+NODE_EXPORTER_URL=http://DOCKER_GATEWAY_IP:9100/metrics
+```
+> See [node_exporter setup](#setting-up-node_exporter) below for installation
+
+### 4. Configure GitHub Secrets
+
+1. Go to your forked repo: `https://github.com/your-username/stats/settings`
+2. Navigate to **Secrets and variables → Actions**
+3. Add two repository secrets:
+
+   **`COOLIFY_API_TOKEN`**
+   - Generate at Coolify: `http://vps-ip:8000/security/private-key`
+   - Enable **read** and **deploy** permissions
+   - Save this token securely (you won't see it again!)
+
+   **`COOLIFY_WEBHOOK_URL`**
+   - Find at your Coolify project dashboard under **Webhooks → Deploy Webhook**
+
+### 5. Deploy
+
+Run the GitHub Actions pipeline to build and deploy your application to the VPS.
 
 ## Setting up node_exporter
 
-SSH into your VPS and run these commands:
+Node Exporter provides system metrics in Prometheus format. SSH into your VPS and run:
+
+### Installation
 
 ```bash
 # Download and install node_exporter
@@ -47,8 +101,11 @@ tar xvfz node_exporter-1.8.2.linux-amd64.tar.gz
 sudo mv node_exporter-1.8.2.linux-amd64/node_exporter /usr/local/bin/
 sudo chmod +x /usr/local/bin/node_exporter
 rm -rf node_exporter-1.8.2.linux-amd64*
+```
 
-# Create systemd service (listens on all interfaces for Docker access)
+### Create systemd service
+
+```bash
 sudo tee /etc/systemd/system/node_exporter.service > /dev/null <<EOF
 [Unit]
 Description=Node Exporter
@@ -63,25 +120,65 @@ Restart=on-failure
 [Install]
 WantedBy=multi-user.target
 EOF
+```
 
-# Start and enable the service
+> **Note:** Configured to listen on `0.0.0.0:9100` for Docker container access
+
+### Start the service
+
+```bash
 sudo systemctl daemon-reload
 sudo systemctl enable node_exporter
 sudo systemctl start node_exporter
+```
 
-# Find your Docker gateway IP
+### Find Docker gateway IP
+
+```bash
 docker network inspect bridge | grep Gateway
-# Output will show something like: "Gateway": "10.0.0.1"
-
-# Test it works
-curl http://localhost:9100/metrics
 ```
 
-Use the Gateway IP in your `NODE_EXPORTER_URL` environment variable:
+Expected output:
+```json
+"Gateway": "10.0.0.1"
 ```
+
+Use this IP in your `NODE_EXPORTER_URL` environment variable:
+```env
 NODE_EXPORTER_URL=http://10.0.0.1:9100/metrics
 ```
 
-For local development:
-- Don't forget to set the .env.local environment variables e.g. NEXT_PUBLIC_APP_URL=http://localhost:3000
-- Run ```npx @better-auth/cli migrate``` to create the db file locally.
+### Test
+
+Verify node_exporter is working:
+```bash
+curl http://localhost:9100/metrics
+```
+
+You should see Prometheus metrics output.
+
+## Local Development
+
+1. Create a `.env.local` file with required environment variables:
+   ```env
+   NEXT_PUBLIC_APP_URL=http://localhost:3000
+   GOOGLE_CLIENT_ID=your_client_id
+   GOOGLE_CLIENT_SECRET=your_client_secret
+   BETTER_AUTH_SECRET=your_secret
+   SSH_HOST=your_vps_ip
+   SSH_PORT=22
+   SSH_USER=your_user
+   SSH_PASSWORD=your_password
+   GOOGLE_EMAIL=your_email@gmail.com
+   NODE_EXPORTER_URL=http://your_vps_ip:9100/metrics
+   ```
+
+2. Initialize the database:
+   ```bash
+   npx @better-auth/cli migrate
+   ```
+
+3. Run the development server:
+   ```bash
+   npm run dev
+   ```
