@@ -1,31 +1,24 @@
 FROM node:22-alpine AS deps
 WORKDIR /app
-
-RUN npm config set update-notifier false
-
 COPY package*.json ./
 RUN npm ci
 
 FROM node:22-alpine AS builder
 WORKDIR /app
-
-# Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# Set dummy environment variables for build-time
+# Dummy envs so Next.js + Better Auth don’t complain
 ENV BETTER_AUTH_SECRET="build_secret"
 ENV GOOGLE_CLIENT_ID="placeholder"
 ENV GOOGLE_CLIENT_SECRET="placeholder"
+ENV DATABASE_URL="file:./prisma/dev.db"
 
-# Use a temporary SQLite file for build to avoid DB errors
-ENV DATABASE_URL="file:./build-placeholder.db"
+# Ensure the directory and file actually exist
+RUN mkdir -p prisma && touch prisma/dev.db
 
-# Run migrations in non-interactive mode
-RUN npx @better-auth/cli migrate --yes || echo "Skipping interactive migration"
-
-# Touch a fake db file so Better Auth doesn't crash
-RUN mkdir -p ./prisma && touch ./prisma/build-placeholder.db
+# Skip interactive prompts safely
+RUN npx @better-auth/cli migrate --yes || echo "Skipping migration"
 
 RUN npm run build
 
