@@ -16,7 +16,7 @@ ENV GOOGLE_CLIENT_ID="placeholder"
 ENV GOOGLE_CLIENT_SECRET="placeholder"
 
 # Run migration at build time to generate SQLite schema
-RUN mkdir -p /app/data && npx @better-auth/cli migrate --yes --config=src/auth.ts
+RUN mkdir -p /app/data && npx @better-auth/cli migrate --yes --config=src/lib/auth.ts
 
 RUN npm run build
 
