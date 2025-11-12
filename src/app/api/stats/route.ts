@@ -1,6 +1,7 @@
 import { auth } from "@/lib/auth";
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
+import { NodeSSH } from "node-ssh";
 
 export async function GET() {
   // Check if user is authenticated
@@ -12,108 +13,175 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  try {
-    const netdataUrl = process.env.NETDATA_URL;
+  const ssh = new NodeSSH();
 
-    if (!netdataUrl) {
+  try {
+    const sshHost = process.env.SSH_HOST;
+    const sshPort = parseInt(process.env.SSH_PORT || "22");
+    const sshUser = process.env.SSH_USER;
+    const sshPassword = process.env.SSH_PASSWORD;
+
+    if (!sshHost || !sshUser || !sshPassword) {
       return NextResponse.json(
-        { error: "Netdata URL not configured" },
+        { error: "SSH credentials not configured" },
         { status: 500 }
       );
     }
 
-    // First, get list of available charts to find disk chart
-    const chartsResponse = await fetch(`${netdataUrl}/api/v1/charts`);
-    const chartsData = await chartsResponse.json();
+    // Connect to server via SSH
+    await ssh.connect({
+      host: sshHost,
+      port: sshPort,
+      username: sshUser,
+      password: sshPassword,
+    });
 
-    // Find disk space chart - it could be disk_space._ or disk_space./
-    const diskChartKey = Object.keys(chartsData.charts || {}).find(
-      (key) => key.startsWith("disk_space.")
-    ) || "disk_space._";
-
-    console.log("Found disk chart:", diskChartKey);
-
-    // Fetch CPU usage from Netdata API
-    const cpuResponse = await fetch(
-      `${netdataUrl}/api/v1/data?chart=system.cpu&after=-1&format=json`
+    // Get CPU usage
+    const cpuResult = await ssh.execCommand(
+      "top -bn1 | grep 'Cpu(s)' | sed 's/.*, *\\([0-9.]*\\)%* id.*/\\1/' | awk '{print 100 - $1}'"
     );
+    const cpuUsage = parseFloat(cpuResult.stdout.trim()) || 0;
 
-    // Fetch Memory usage
-    const memoryResponse = await fetch(
-      `${netdataUrl}/api/v1/data?chart=system.ram&after=-1&format=json`
+    // Get memory usage
+    const memResult = await ssh.execCommand("free -m");
+    const memLines = memResult.stdout.split("\n");
+    const memLine = memLines[1].split(/\s+/);
+    const memTotal = parseInt(memLine[1]) || 0;
+    const memUsed = parseInt(memLine[2]) || 0;
+
+    // Get disk usage
+    const diskResult = await ssh.execCommand("df -BG / | tail -1");
+    const diskLine = diskResult.stdout.split(/\s+/);
+    const diskTotal = parseInt(diskLine[1].replace("G", "")) || 0;
+    const diskUsed = parseInt(diskLine[2].replace("G", "")) || 0;
+
+    // Get top CPU processes from Docker
+    const dockerCpuResult = await ssh.execCommand(
+      'docker stats --no-stream --format "{{.Name}}\\t{{.CPUPerc}}" | sort -k2 -rn | head -5'
     );
+    console.log("Docker CPU output:", dockerCpuResult.stdout);
+    console.log("Docker CPU error:", dockerCpuResult.stderr);
 
-    // Fetch Disk usage with the correct chart name
-    const diskResponse = await fetch(
-      `${netdataUrl}/api/v1/data?chart=${diskChartKey}&after=-1&format=json`
+    const topCpuProcesses = dockerCpuResult.stdout
+      .split("\n")
+      .filter((line) => line.trim())
+      .map((line) => {
+        const [name, cpu] = line.split("\t");
+        return {
+          name: name.trim(),
+          value: parseFloat(cpu.replace("%", "")) || 0,
+        };
+      })
+      .filter((p) => p.value > 0);
+
+    console.log("Parsed CPU processes:", topCpuProcesses);
+
+    // Get top memory processes from Docker
+    const dockerMemResult = await ssh.execCommand(
+      'docker stats --no-stream --format "{{.Name}}\\t{{.MemUsage}}" | head -5'
     );
+    console.log("Docker Mem output:", dockerMemResult.stdout);
+    console.log("Docker Mem error:", dockerMemResult.stderr);
 
-    if (!cpuResponse.ok || !memoryResponse.ok || !diskResponse.ok) {
-      throw new Error(`Failed to fetch from Netdata - CPU: ${cpuResponse.status}, Memory: ${memoryResponse.status}, Disk: ${diskResponse.status}`);
-    }
+    const topMemProcesses = dockerMemResult.stdout
+      .split("\n")
+      .filter((line) => line.trim())
+      .map((line) => {
+        const [name, mem] = line.split("\t");
+        const memMatch = mem.match(/([0-9.]+)([KMG]iB)/);
+        if (!memMatch) return null;
 
-    const cpuData = await cpuResponse.json();
-    const memoryData = await memoryResponse.json();
-    const diskData = await diskResponse.json();
+        let memBytes = parseFloat(memMatch[1]);
+        const unit = memMatch[2];
 
-    // Parse CPU usage - sum all CPU usage fields (excluding 'time')
-    const cpuLabels = cpuData.labels || [];
-    const cpuValues = cpuData.data?.[0] || [];
+        if (unit === "GiB") memBytes *= 1024 * 1024 * 1024;
+        else if (unit === "MiB") memBytes *= 1024 * 1024;
+        else if (unit === "KiB") memBytes *= 1024;
 
-    // Sum all CPU usage values (skip first value which is 'time')
-    let cpuUsage = 0;
-    for (let i = 1; i < cpuLabels.length; i++) {
-      cpuUsage += cpuValues[i] || 0;
-    }
+        return {
+          name: name.trim(),
+          value: memBytes,
+        };
+      })
+      .filter((p) => p !== null)
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 5) as Array<{ name: string; value: number }>;
 
-    // Parse Memory usage - values are already in MB
-    const memoryLabels = memoryData.labels || [];
-    const memoryValues = memoryData.data?.[0] || [];
-    const memFreeIndex = memoryLabels.indexOf("free");
-    const memUsedIndex = memoryLabels.indexOf("used");
-    const memCachedIndex = memoryLabels.indexOf("cached");
-    const memBuffersIndex = memoryLabels.indexOf("buffers");
+    console.log("Parsed Mem processes:", topMemProcesses);
 
-    const memoryFree = (memFreeIndex >= 0 ? memoryValues[memFreeIndex] : 0) || 0;
-    const memoryUsed = (memUsedIndex >= 0 ? memoryValues[memUsedIndex] : 0) || 0;
-    const memoryCached = (memCachedIndex >= 0 ? memoryValues[memCachedIndex] : 0) || 0;
-    const memoryBuffers = (memBuffersIndex >= 0 ? memoryValues[memBuffersIndex] : 0) || 0;
+    // Get disk I/O from Docker containers
+    const dockerDiskResult = await ssh.execCommand(
+      'docker stats --no-stream --format "{{.Name}}\\t{{.BlockIO}}"'
+    );
+    console.log("Docker Disk output:", dockerDiskResult.stdout);
+    console.log("Docker Disk error:", dockerDiskResult.stderr);
 
-    // Total memory = free + used + cached + buffers
-    const memoryTotal = memoryFree + memoryUsed + memoryCached + memoryBuffers;
+    const topDiskProcesses = (dockerDiskResult.stdout
+      .split("\n")
+      .filter((line) => line.trim())
+      .map((line) => {
+        const [name, blockIO] = line.split("\t");
+        // BlockIO format is like "1.2MB / 3.4MB" (read / write)
+        const ioMatch = blockIO?.match(/([0-9.]+)([kKMGT]?B)\s*\/\s*([0-9.]+)([kKMGT]?B)/);
+        if (!ioMatch) return null;
 
-    // Parse Disk usage
-    const diskLabels = diskData.labels || [];
-    const diskValues = diskData.data?.[0] || [];
-    const availIndex = diskLabels.indexOf("avail");
-    const diskUsedIndex = diskLabels.indexOf("used");
+        const readValue = parseFloat(ioMatch[1]);
+        const readUnit = ioMatch[2];
+        const writeValue = parseFloat(ioMatch[3]);
+        const writeUnit = ioMatch[4];
 
-    const diskAvail = (availIndex >= 0 ? diskValues[availIndex] : 0) || 0;
-    const diskUsed = (diskUsedIndex >= 0 ? diskValues[diskUsedIndex] : 0) || 0;
-    const diskTotal = diskUsed + diskAvail;
+        // Convert to bytes and sum read + write
+        const convertToBytes = (value: number, unit: string) => {
+          if (unit === "TB") return value * 1024 * 1024 * 1024 * 1024;
+          if (unit === "GB") return value * 1024 * 1024 * 1024;
+          if (unit === "MB") return value * 1024 * 1024;
+          if (unit === "kB" || unit === "KB") return value * 1024;
+          return value; // Assume bytes
+        };
+
+        const totalBytes = convertToBytes(readValue, readUnit) + convertToBytes(writeValue, writeUnit);
+
+        return {
+          name: name.trim(),
+          value: totalBytes,
+        };
+      })
+      .filter((p): p is { name: string; value: number } => p !== null && p.value > 0) as Array<{ name: string; value: number }>)
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 5);
+
+    console.log("Parsed Disk processes:", topDiskProcesses);
+
+    ssh.dispose();
 
     return NextResponse.json({
       server: {
         name: "VPS Server",
-        ip: "157.180.42.62",
-        description: "Monitored by Netdata",
+        ip: sshHost,
+        description: "Monitored via SSH",
       },
       resources: {
         cpu: cpuUsage,
         memory: {
-          used: memoryUsed * 1024 * 1024, // Convert MB to bytes
-          total: memoryTotal * 1024 * 1024,
+          used: memUsed * 1024 * 1024, // Convert MB to bytes
+          total: memTotal * 1024 * 1024,
         },
         disk: {
           used: diskUsed * 1024 * 1024 * 1024, // Convert GB to bytes
           total: diskTotal * 1024 * 1024 * 1024,
         },
       },
+      topProcesses: {
+        cpu: topCpuProcesses,
+        memory: topMemProcesses,
+        disk: topDiskProcesses,
+      },
     });
   } catch (error) {
-    console.error("Error fetching stats:", error);
+    ssh.dispose();
+    console.error("Error fetching stats via SSH:", error);
     return NextResponse.json(
-      { error: "Failed to fetch stats" },
+      { error: "Failed to fetch stats via SSH" },
       { status: 500 }
     );
   }

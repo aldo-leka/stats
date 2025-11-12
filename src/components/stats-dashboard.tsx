@@ -19,6 +19,11 @@ interface ServerStats {
       total: number;
     } | null;
   };
+  topProcesses?: {
+    cpu: Array<{ name: string; value: number }>;
+    memory: Array<{ name: string; value: number }>;
+    disk: Array<{ name: string; value: number }>;
+  };
 }
 
 export function StatsDashboard() {
@@ -171,6 +176,77 @@ export function StatsDashboard() {
           )}
         </div>
       </div>
+
+      {/* Top Processes */}
+      {stats.topProcesses && (stats.topProcesses.cpu.length > 0 || stats.topProcesses.memory.length > 0 || stats.topProcesses.disk.length > 0) && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
+          {/* Top CPU Processes */}
+          {stats.topProcesses.cpu.length > 0 && (
+            <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-6">
+              <h3 className="text-lg font-semibold text-white mb-4">Top CPU Consumers</h3>
+              <div className="space-y-3">
+                {stats.topProcesses.cpu.map((proc, idx) => (
+                  <div key={idx} className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <div className="w-6 h-6 flex items-center justify-center bg-blue-500/20 rounded text-xs text-blue-400">
+                        {idx + 1}
+                      </div>
+                      <span className="text-sm text-gray-300 truncate">{proc.name}</span>
+                    </div>
+                    <span className="text-sm font-semibold text-blue-400 ml-2">
+                      {proc.value.toFixed(1)}%
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Top Memory Processes */}
+          {stats.topProcesses.memory.length > 0 && (
+            <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-6">
+              <h3 className="text-lg font-semibold text-white mb-4">Top Memory Consumers</h3>
+              <div className="space-y-3">
+                {stats.topProcesses.memory.map((proc, idx) => (
+                  <div key={idx} className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <div className="w-6 h-6 flex items-center justify-center bg-green-500/20 rounded text-xs text-green-400">
+                        {idx + 1}
+                      </div>
+                      <span className="text-sm text-gray-300 truncate">{proc.name}</span>
+                    </div>
+                    <span className="text-sm font-semibold text-green-400 ml-2">
+                      {formatBytes(proc.value)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Top Disk I/O Processes */}
+          {stats.topProcesses.disk.length > 0 && (
+            <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-6">
+              <h3 className="text-lg font-semibold text-white mb-4">Top Disk I/O Consumers</h3>
+              <div className="space-y-3">
+                {stats.topProcesses.disk.map((proc, idx) => (
+                  <div key={idx} className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <div className="w-6 h-6 flex items-center justify-center bg-purple-500/20 rounded text-xs text-purple-400">
+                        {idx + 1}
+                      </div>
+                      <span className="text-sm text-gray-300 truncate">{proc.name}</span>
+                    </div>
+                    <span className="text-sm font-semibold text-purple-400 ml-2">
+                      {formatBytes(proc.value)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
