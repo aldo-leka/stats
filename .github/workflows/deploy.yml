@@ -48,7 +48,13 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: type=gha,mode=min
+          provenance: false   # Speeds up build, disables unused attestation metadata
+          sbom: false          # Skips SBOM generation (saves ~20–30s)
+          build-args: |
+            BETTER_AUTH_SECRET=build_secret
+            GOOGLE_CLIENT_ID=placeholder
+            GOOGLE_CLIENT_SECRET=placeholder
 
   deploy:
     needs: build-and-push
