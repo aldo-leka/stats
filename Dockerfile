@@ -12,13 +12,8 @@ COPY . .
 ENV BETTER_AUTH_SECRET="build_secret"
 ENV GOOGLE_CLIENT_ID="placeholder"
 ENV GOOGLE_CLIENT_SECRET="placeholder"
-ENV DATABASE_URL="file:./prisma/dev.db"
 
-# Ensure the directory and file actually exist
-RUN mkdir -p prisma && touch prisma/dev.db
-
-# Skip interactive prompts safely
-RUN npx @better-auth/cli migrate --yes || echo "Skipping migration"
+RUN mkdir -p /app/data && npx @better-auth/cli migrate --yes
 
 RUN npm run build
 
