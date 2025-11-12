@@ -28,7 +28,7 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/data ./data
-COPY --from=builder /app/src ./src  # ✅ required so CLI can see auth.ts at runtime
+COPY --from=builder /app/src/lib/auth.ts ./src/lib/auth.ts
 
 ENV NODE_ENV=production
 ENV PORT=3000
