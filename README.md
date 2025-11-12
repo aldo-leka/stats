@@ -28,12 +28,59 @@ Make sure to copy the client id and client secret somewhere safe.
     - SSH_USER=user
     - SSH_PASSWORD=pwd
     - GOOGLE_EMAIL=allowed_access_google_email
-    - NODE_EXPORTER_URL=http://vps-ip:9100/metrics ([install instructions here](https://prometheus.io/docs/guides/node-exporter/))
+    - NODE_EXPORTER_URL=http://DOCKER_GATEWAY_IP:9100/metrics (see node_exporter setup below)
 9. Go to your forked GitHub stats project's Settings, e.g. https://github.com/your-username/stats/settings.
 10. Go to Secrets and variables -> Actions and add two repository secrets:
     1. COOLIFY_API_TOKEN to the token you generate at your Coolify dashboard at Keys & Tokens. e.g. http://vps-ip:8000/security/private-key. Make sure to set read and deploy permissions and save this in your notes because you won't see it again!
     2. COOLIFY_WEBHOOK_URL to the URL you can find at your project's Coolify dashboard at the Webhooks tab -> Deploy Webhook.
 11. Run the pipeline in GitHub to build and deploy the project to your VPS and website.
+
+## Setting up node_exporter
+
+SSH into your VPS and run these commands:
+
+```bash
+# Download and install node_exporter
+cd /tmp
+wget https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-amd64.tar.gz
+tar xvfz node_exporter-1.8.2.linux-amd64.tar.gz
+sudo mv node_exporter-1.8.2.linux-amd64/node_exporter /usr/local/bin/
+sudo chmod +x /usr/local/bin/node_exporter
+rm -rf node_exporter-1.8.2.linux-amd64*
+
+# Create systemd service (listens on all interfaces for Docker access)
+sudo tee /etc/systemd/system/node_exporter.service > /dev/null <<EOF
+[Unit]
+Description=Node Exporter
+After=network.target
+
+[Service]
+Type=simple
+User=nobody
+ExecStart=/usr/local/bin/node_exporter --web.listen-address=0.0.0.0:9100
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Start and enable the service
+sudo systemctl daemon-reload
+sudo systemctl enable node_exporter
+sudo systemctl start node_exporter
+
+# Find your Docker gateway IP
+docker network inspect bridge | grep Gateway
+# Output will show something like: "Gateway": "10.0.0.1"
+
+# Test it works
+curl http://localhost:9100/metrics
+```
+
+Use the Gateway IP in your `NODE_EXPORTER_URL` environment variable:
+```
+NODE_EXPORTER_URL=http://10.0.0.1:9100/metrics
+```
 
 For local development:
 - Don't forget to set the .env.local environment variables e.g. NEXT_PUBLIC_APP_URL=http://localhost:3000
