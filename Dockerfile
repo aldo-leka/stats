@@ -18,9 +18,14 @@ ENV BETTER_AUTH_SECRET="build_secret"
 ENV GOOGLE_CLIENT_ID="placeholder"
 ENV GOOGLE_CLIENT_SECRET="placeholder"
 
-# Run migrations in non-interactive mode (auto-confirm)
-# If @better-auth/cli supports `--yes`, this ensures CI won't hang
+# Use a temporary SQLite file for build to avoid DB errors
+ENV DATABASE_URL="file:./build-placeholder.db"
+
+# Run migrations in non-interactive mode
 RUN npx @better-auth/cli migrate --yes || echo "Skipping interactive migration"
+
+# Touch a fake db file so Better Auth doesn't crash
+RUN mkdir -p ./prisma && touch ./prisma/build-placeholder.db
 
 RUN npm run build
 
