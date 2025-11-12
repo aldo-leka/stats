@@ -24,7 +24,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-RUN mkdir -p /app/data && npx @better-auth/cli migrate
+RUN mkdir -p /app/data && npx @better-auth/cli migrate --yes
 
 # Build Next.js
 RUN npm run build
