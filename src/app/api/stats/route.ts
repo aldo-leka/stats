@@ -3,6 +3,71 @@ import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { NodeSSH } from "node-ssh";
 
+// Helper function to parse Prometheus metrics
+function parsePrometheusMetrics(text: string): Map<string, number> {
+  const metrics = new Map<string, number>();
+  const lines = text.split("\n");
+
+  for (const line of lines) {
+    // Skip comments and empty lines
+    if (line.startsWith("#") || !line.trim()) continue;
+
+    // Parse metric line: metric_name{labels} value
+    const match = line.match(/^([a-zA-Z_:][a-zA-Z0-9_:]*)\{([^}]*)\}\s+([0-9.eE+-]+)/);
+    if (match) {
+      const [, metricName, labels, value] = match;
+      const key = `${metricName}{${labels}}`;
+      metrics.set(key, parseFloat(value));
+    } else {
+      // Simple metric without labels
+      const simpleMatch = line.match(/^([a-zA-Z_:][a-zA-Z0-9_:]*)\s+([0-9.eE+-]+)/);
+      if (simpleMatch) {
+        const [, metricName, value] = simpleMatch;
+        metrics.set(metricName, parseFloat(value));
+      }
+    }
+  }
+
+  return metrics;
+}
+
+// Helper function to get metric value by pattern
+function getMetricValue(metrics: Map<string, number>, pattern: string): number | null {
+  for (const [key, value] of metrics) {
+    if (key.includes(pattern)) {
+      return value;
+    }
+  }
+  return null;
+}
+
+// Helper function to calculate CPU usage from node_exporter
+function calculateCpuUsage(metrics: Map<string, number>): number {
+  let totalIdle = 0;
+  let totalAll = 0;
+  let cpuCount = 0;
+
+  for (const [key, value] of metrics) {
+    if (key.startsWith("node_cpu_seconds_total")) {
+      totalAll += value;
+      if (key.includes('mode="idle"')) {
+        totalIdle += value;
+      }
+      if (key.includes('cpu="0"') && key.includes('mode="idle"')) {
+        cpuCount++;
+      }
+    }
+  }
+
+  if (totalAll === 0) return 0;
+
+  // Calculate CPU usage as percentage of non-idle time
+  const idlePercent = (totalIdle / totalAll) * 100;
+  const usage = 100 - idlePercent;
+
+  return Math.max(0, Math.min(100, usage));
+}
+
 export async function GET() {
   // Check if user is authenticated
   const session = await auth.api.getSession({
@@ -20,6 +85,7 @@ export async function GET() {
     const sshPort = parseInt(process.env.SSH_PORT || "22");
     const sshUser = process.env.SSH_USER;
     const sshPassword = process.env.SSH_PASSWORD;
+    const nodeExporterUrl = process.env.NODE_EXPORTER_URL;
 
     if (!sshHost || !sshUser || !sshPassword) {
       return NextResponse.json(
@@ -28,7 +94,14 @@ export async function GET() {
       );
     }
 
-    // Connect to server via SSH
+    if (!nodeExporterUrl) {
+      return NextResponse.json(
+        { error: "NODE_EXPORTER_URL not configured" },
+        { status: 500 }
+      );
+    }
+
+    // Connect to server via SSH (for per-process data only)
     await ssh.connect({
       host: sshHost,
       port: sshPort,
@@ -36,22 +109,18 @@ export async function GET() {
       password: sshPassword,
     });
 
-    // Run all SSH commands in parallel for speed
+    // Fetch data in parallel: node_exporter metrics + SSH per-process data
     const [
-      cpuResult,
-      memResult,
-      diskResult,
+      metricsResponse,
       dockerCpuResult,
       cpuProcessResult,
       dockerMemResult,
       memProcessResult,
-      dockerDiskResult
+      dockerDiskResult,
     ] = await Promise.all([
-      ssh.execCommand(
-        "top -bn1 | grep 'Cpu(s)' | sed 's/.*, *\\([0-9.]*\\)%* id.*/\\1/' | awk '{print 100 - $1}'"
-      ),
-      ssh.execCommand("free -m"),
-      ssh.execCommand("df -BG / | tail -1"),
+      // Fetch node_exporter metrics
+      fetch(nodeExporterUrl),
+      // SSH commands for per-process data
       ssh.execCommand(
         'docker stats --no-stream --format "{{.Name}}\\t{{.CPUPerc}}" 2>/dev/null || echo ""'
       ),
@@ -69,19 +138,37 @@ export async function GET() {
       ),
     ]);
 
-    // Parse CPU usage
-    const cpuUsage = parseFloat(cpuResult.stdout.trim()) || 0;
+    if (!metricsResponse.ok) {
+      throw new Error(`Failed to fetch node_exporter metrics: ${metricsResponse.status}`);
+    }
 
-    // Parse memory usage
-    const memLines = memResult.stdout.split("\n");
-    const memLine = memLines[1].split(/\s+/);
-    const memTotal = parseInt(memLine[1]) || 0;
-    const memUsed = parseInt(memLine[2]) || 0;
+    const metricsText = await metricsResponse.text();
+    const metrics = parsePrometheusMetrics(metricsText);
 
-    // Parse disk usage
-    const diskLine = diskResult.stdout.split(/\s+/);
-    const diskTotal = parseInt(diskLine[1].replace("G", "")) || 0;
-    const diskUsed = parseInt(diskLine[2].replace("G", "")) || 0;
+    // Parse system metrics from node_exporter
+    const cpuUsage = calculateCpuUsage(metrics);
+
+    // Memory metrics
+    const memTotal = getMetricValue(metrics, "node_memory_MemTotal_bytes") || 0;
+    const memAvailable = getMetricValue(metrics, "node_memory_MemAvailable_bytes") || 0;
+    const memUsed = memTotal - memAvailable;
+
+    // Disk metrics (for root filesystem)
+    let diskTotal = 0;
+    let diskAvailable = 0;
+
+    // Get both values first
+    for (const [key, value] of metrics) {
+      if (key.includes('node_filesystem_size_bytes') && key.includes('mountpoint="/"')) {
+        diskTotal = value;
+      }
+      if (key.includes('node_filesystem_avail_bytes') && key.includes('mountpoint="/"')) {
+        diskAvailable = value;
+      }
+    }
+
+    // Calculate used space
+    const diskUsed = diskTotal - diskAvailable;
 
     // Parse Docker CPU processes
     const dockerCpuProcesses = dockerCpuResult.stdout
@@ -109,11 +196,17 @@ export async function GET() {
           value: cpu,
         };
       })
-      .filter((p) => p.value > 0);
+      .filter((p) => {
+        // Filter out monitoring commands and low CPU processes
+        const monitoringCommands = ['ps', 'docker', 'awk', 'head', 'tail', 'grep', 'sed', 'sort'];
+        const isMonitoringCmd = monitoringCommands.some(cmd => p.name === cmd || p.name.startsWith(cmd + ' '));
+        return p.value > 0 && !isMonitoringCmd;
+      });
 
     // Combine and sort both Docker and system processes
-    const topCpuProcesses = [...dockerCpuProcesses, ...systemCpuProcesses]
-      .sort((a, b) => b.value - a.value);
+    const topCpuProcesses = [...dockerCpuProcesses, ...systemCpuProcesses].sort(
+      (a, b) => b.value - a.value
+    );
 
     // Parse Docker memory processes
     const dockerMemProcesses = dockerMemResult.stdout
@@ -136,7 +229,9 @@ export async function GET() {
           value: memBytes,
         };
       })
-      .filter((p): p is { name: string; value: number } => p !== null && p.value > 0);
+      .filter(
+        (p): p is { name: string; value: number } => p !== null && p.value > 0
+      );
 
     // Parse system memory processes
     const systemMemProcesses = memProcessResult.stdout
@@ -147,7 +242,7 @@ export async function GET() {
         const memPercent = parseFloat(parts[parts.length - 1]) || 0;
         const name = parts.slice(0, -1).join(" ") || "unknown";
         // Convert percentage to bytes based on total memory
-        const memBytes = (memPercent / 100) * (memTotal * 1024 * 1024);
+        const memBytes = (memPercent / 100) * memTotal;
         return {
           name: name,
           value: memBytes,
@@ -156,8 +251,9 @@ export async function GET() {
       .filter((p) => p.value > 0);
 
     // Combine and sort both Docker and system processes
-    const topMemProcesses = [...dockerMemProcesses, ...systemMemProcesses]
-      .sort((a, b) => b.value - a.value);
+    const topMemProcesses = [...dockerMemProcesses, ...systemMemProcesses].sort(
+      (a, b) => b.value - a.value
+    );
 
     // Parse Docker disk I/O processes
     const dockerDiskProcesses = dockerDiskResult.stdout
@@ -167,7 +263,9 @@ export async function GET() {
         const [name, blockIO] = line.split("\t");
         if (!blockIO) return null;
         // BlockIO format is like "1.2MB / 3.4MB" (read / write)
-        const ioMatch = blockIO.match(/([0-9.]+)([kKMGT]?B)\s*\/\s*([0-9.]+)([kKMGT]?B)/);
+        const ioMatch = blockIO.match(
+          /([0-9.]+)([kKMGT]?B)\s*\/\s*([0-9.]+)([kKMGT]?B)/
+        );
         if (!ioMatch) return null;
 
         const readValue = parseFloat(ioMatch[1]);
@@ -176,26 +274,34 @@ export async function GET() {
         const writeUnit = ioMatch[4];
 
         const convertToBytes = (value: number, unit: string) => {
-          if (unit === "TB" || unit === "TiB") return value * 1024 * 1024 * 1024 * 1024;
-          if (unit === "GB" || unit === "GiB") return value * 1024 * 1024 * 1024;
+          if (unit === "TB" || unit === "TiB")
+            return value * 1024 * 1024 * 1024 * 1024;
+          if (unit === "GB" || unit === "GiB")
+            return value * 1024 * 1024 * 1024;
           if (unit === "MB" || unit === "MiB") return value * 1024 * 1024;
-          if (unit === "kB" || unit === "KB" || unit === "KiB") return value * 1024;
+          if (unit === "kB" || unit === "KB" || unit === "KiB")
+            return value * 1024;
           return value;
         };
 
-        const totalBytes = convertToBytes(readValue, readUnit) + convertToBytes(writeValue, writeUnit);
+        const totalBytes =
+          convertToBytes(readValue, readUnit) +
+          convertToBytes(writeValue, writeUnit);
 
         return {
           name: `[docker] ${name?.trim() || "unknown"}`,
           value: totalBytes,
         };
       })
-      .filter((p): p is { name: string; value: number } => p !== null && p.value > 0);
+      .filter(
+        (p): p is { name: string; value: number } => p !== null && p.value > 0
+      );
 
     // Note: Getting per-process disk I/O for system processes requires root access
     // Docker stats covers most disk activity on a containerized server
-    const topDiskProcesses = dockerDiskProcesses
-      .sort((a, b) => b.value - a.value);
+    const topDiskProcesses = dockerDiskProcesses.sort(
+      (a, b) => b.value - a.value
+    );
 
     ssh.dispose();
 
@@ -203,17 +309,17 @@ export async function GET() {
       server: {
         name: "VPS Server",
         ip: sshHost,
-        description: "Monitored via SSH",
+        description: "Monitored via node_exporter + SSH",
       },
       resources: {
         cpu: cpuUsage,
         memory: {
-          used: memUsed * 1024 * 1024, // Convert MB to bytes
-          total: memTotal * 1024 * 1024,
+          used: memUsed,
+          total: memTotal,
         },
         disk: {
-          used: diskUsed * 1024 * 1024 * 1024, // Convert GB to bytes
-          total: diskTotal * 1024 * 1024 * 1024,
+          used: diskUsed,
+          total: diskTotal,
         },
       },
       topProcesses: {
@@ -224,8 +330,12 @@ export async function GET() {
     });
   } catch (error) {
     ssh.dispose();
+    console.error("Stats fetch error:", error);
     return NextResponse.json(
-      { error: "Failed to fetch stats via SSH" },
+      {
+        error: "Failed to fetch stats",
+        details: error instanceof Error ? error.message : "Unknown error"
+      },
       { status: 500 }
     );
   }
