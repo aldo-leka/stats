@@ -286,7 +286,9 @@ export async function GET() {
           secondaryMetric: parseFloat(cpu?.replace("%", "") || "0") || 0,
         };
       })
-      .filter((p) => p !== null && p.value > 0);
+      .filter((p): p is { name: string; value: number; pid: string | undefined; user: string; image: string | undefined; secondaryMetric: number } =>
+        p !== null && p.value > 0
+      );
 
     // Parse system memory processes
     const systemMemProcesses = memProcessResult.stdout
@@ -311,7 +313,9 @@ export async function GET() {
           secondaryMetric: cpuPercent,
         };
       })
-      .filter((p) => p !== null && p.value > 0);
+      .filter((p): p is { name: string; value: number; pid: string; user: string; secondaryMetric: number } =>
+        p !== null && p.value > 0
+      );
 
     // Combine and sort both Docker and system processes
     const topMemProcesses = [...dockerMemProcesses, ...systemMemProcesses].sort(
