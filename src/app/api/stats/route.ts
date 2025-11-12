@@ -367,7 +367,7 @@ export async function GET() {
         };
       })
       .filter(
-        (p): p is { name: string; value: number; pid?: string; user: string; image?: string } => p !== null && p.value > 0
+        (p): p is { name: string; value: number; pid: string | undefined; user: string; image: string | undefined } => p !== null && p.value > 0
       );
 
     // Note: Getting per-process disk I/O for system processes requires root access
