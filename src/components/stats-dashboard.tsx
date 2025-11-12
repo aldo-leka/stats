@@ -20,9 +20,29 @@ interface ServerStats {
     } | null;
   };
   topProcesses?: {
-    cpu: Array<{ name: string; value: number }>;
-    memory: Array<{ name: string; value: number }>;
-    disk: Array<{ name: string; value: number }>;
+    cpu: Array<{
+      name: string;
+      value: number;
+      pid?: string;
+      user?: string;
+      image?: string;
+      secondaryMetric?: number;
+    }>;
+    memory: Array<{
+      name: string;
+      value: number;
+      pid?: string;
+      user?: string;
+      image?: string;
+      secondaryMetric?: number;
+    }>;
+    disk: Array<{
+      name: string;
+      value: number;
+      pid?: string;
+      user?: string;
+      image?: string;
+    }>;
   };
 }
 
@@ -230,16 +250,26 @@ export function StatsDashboard() {
                 {getPaginatedData(stats.topProcesses.cpu, cpuPage).map((proc, idx) => {
                   const actualIdx = cpuPage * itemsPerPage + idx;
                   return (
-                    <div key={actualIdx} className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 flex-1 min-w-0">
-                        <div className="w-6 h-6 flex items-center justify-center bg-blue-500/20 rounded text-xs text-blue-400">
-                          {actualIdx + 1}
+                    <div key={actualIdx} className="flex flex-col gap-1 p-2 rounded hover:bg-gray-700/30 transition-colors">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <div className="w-6 h-6 flex items-center justify-center bg-blue-500/20 rounded text-xs text-blue-400">
+                            {actualIdx + 1}
+                          </div>
+                          <span className="text-sm text-gray-300 truncate" title={proc.name}>{proc.name}</span>
                         </div>
-                        <span className="text-sm text-gray-300 truncate">{proc.name}</span>
+                        <span className="text-sm font-semibold text-blue-400 ml-2">
+                          {proc.value.toFixed(1)}%
+                        </span>
                       </div>
-                      <span className="text-sm font-semibold text-blue-400 ml-2">
-                        {proc.value.toFixed(1)}%
-                      </span>
+                      <div className="flex items-center gap-3 text-xs text-gray-500 ml-8">
+                        {proc.pid && <span title={proc.pid.length > 12 ? `Container ID: ${proc.pid}` : `PID: ${proc.pid}`}>ID: {proc.pid}</span>}
+                        {proc.user && <span title={`User: ${proc.user}`}>User: {proc.user}</span>}
+                        {proc.image && <span className="truncate" title={`Image: ${proc.image}`}>Image: {proc.image}</span>}
+                        {proc.secondaryMetric !== undefined && (
+                          <span className="text-green-400/70" title={`Memory usage: ${formatBytes(proc.secondaryMetric)}`}>Mem: {formatBytes(proc.secondaryMetric)}</span>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
@@ -281,16 +311,26 @@ export function StatsDashboard() {
                 {getPaginatedData(stats.topProcesses.memory, memPage).map((proc, idx) => {
                   const actualIdx = memPage * itemsPerPage + idx;
                   return (
-                    <div key={actualIdx} className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 flex-1 min-w-0">
-                        <div className="w-6 h-6 flex items-center justify-center bg-green-500/20 rounded text-xs text-green-400">
-                          {actualIdx + 1}
+                    <div key={actualIdx} className="flex flex-col gap-1 p-2 rounded hover:bg-gray-700/30 transition-colors">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <div className="w-6 h-6 flex items-center justify-center bg-green-500/20 rounded text-xs text-green-400">
+                            {actualIdx + 1}
+                          </div>
+                          <span className="text-sm text-gray-300 truncate" title={proc.name}>{proc.name}</span>
                         </div>
-                        <span className="text-sm text-gray-300 truncate">{proc.name}</span>
+                        <span className="text-sm font-semibold text-green-400 ml-2">
+                          {formatBytes(proc.value)}
+                        </span>
                       </div>
-                      <span className="text-sm font-semibold text-green-400 ml-2">
-                        {formatBytes(proc.value)}
-                      </span>
+                      <div className="flex items-center gap-3 text-xs text-gray-500 ml-8">
+                        {proc.pid && <span title={proc.pid.length > 12 ? `Container ID: ${proc.pid}` : `PID: ${proc.pid}`}>ID: {proc.pid}</span>}
+                        {proc.user && <span title={`User: ${proc.user}`}>User: {proc.user}</span>}
+                        {proc.image && <span className="truncate" title={`Image: ${proc.image}`}>Image: {proc.image}</span>}
+                        {proc.secondaryMetric !== undefined && (
+                          <span className="text-blue-400/70" title={`CPU usage: ${proc.secondaryMetric.toFixed(1)}%`}>CPU: {proc.secondaryMetric.toFixed(1)}%</span>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
@@ -332,16 +372,23 @@ export function StatsDashboard() {
                 {getPaginatedData(stats.topProcesses.disk, diskPage).map((proc, idx) => {
                   const actualIdx = diskPage * itemsPerPage + idx;
                   return (
-                    <div key={actualIdx} className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 flex-1 min-w-0">
-                        <div className="w-6 h-6 flex items-center justify-center bg-purple-500/20 rounded text-xs text-purple-400">
-                          {actualIdx + 1}
+                    <div key={actualIdx} className="flex flex-col gap-1 p-2 rounded hover:bg-gray-700/30 transition-colors">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <div className="w-6 h-6 flex items-center justify-center bg-purple-500/20 rounded text-xs text-purple-400">
+                            {actualIdx + 1}
+                          </div>
+                          <span className="text-sm text-gray-300 truncate" title={proc.name}>{proc.name}</span>
                         </div>
-                        <span className="text-sm text-gray-300 truncate">{proc.name}</span>
+                        <span className="text-sm font-semibold text-purple-400 ml-2">
+                          {formatBytes(proc.value)}
+                        </span>
                       </div>
-                      <span className="text-sm font-semibold text-purple-400 ml-2">
-                        {formatBytes(proc.value)}
-                      </span>
+                      <div className="flex items-center gap-3 text-xs text-gray-500 ml-8">
+                        {proc.pid && <span title={`Container ID: ${proc.pid}`}>ID: {proc.pid}</span>}
+                        {proc.user && <span>User: {proc.user}</span>}
+                        {proc.image && <span className="truncate" title={`Image: ${proc.image}`}>Image: {proc.image}</span>}
+                      </div>
                     </div>
                   );
                 })}

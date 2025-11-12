@@ -117,24 +117,28 @@ export async function GET() {
       dockerMemResult,
       memProcessResult,
       dockerDiskResult,
+      dockerInfoResult,
     ] = await Promise.all([
       // Fetch node_exporter metrics
       fetch(nodeExporterUrl),
       // SSH commands for per-process data
       ssh.execCommand(
-        'docker stats --no-stream --format "{{.Name}}\\t{{.CPUPerc}}" 2>/dev/null || echo ""'
+        'docker stats --no-stream --format "{{.Name}}\\t{{.CPUPerc}}\\t{{.MemUsage}}" 2>/dev/null || echo ""'
       ),
       ssh.execCommand(
-        "ps aux --sort=-%cpu | head -11 | tail -10 | awk '{print $11, $3}'"
+        "ps aux --sort=-%cpu | head -11 | tail -10 | awk '{print $2, $1, $11, $3, $4}'"
       ),
       ssh.execCommand(
-        'docker stats --no-stream --format "{{.Name}}\\t{{.MemUsage}}" 2>/dev/null || echo ""'
+        'docker stats --no-stream --format "{{.Name}}\\t{{.MemUsage}}\\t{{.CPUPerc}}" 2>/dev/null || echo ""'
       ),
       ssh.execCommand(
-        "ps aux --sort=-%mem | head -11 | tail -10 | awk '{print $11, $4}'"
+        "ps aux --sort=-%mem | head -11 | tail -10 | awk '{print $2, $1, $11, $4, $3}'"
       ),
       ssh.execCommand(
         'docker stats --no-stream --format "{{.Name}}\\t{{.BlockIO}}" 2>/dev/null || echo ""'
+      ),
+      ssh.execCommand(
+        'docker ps --format "{{.Names}}\\t{{.ID}}\\t{{.Image}}" 2>/dev/null || echo ""'
       ),
     ]);
 
@@ -170,15 +174,48 @@ export async function GET() {
     // Calculate used space
     const diskUsed = diskTotal - diskAvailable;
 
+    // Parse Docker container info (name -> ID and image mapping)
+    const dockerContainerInfo = new Map<string, { id: string; image: string }>();
+    dockerInfoResult.stdout
+      .split("\n")
+      .filter((line) => line.trim())
+      .forEach((line) => {
+        const [name, id, image] = line.split("\t");
+        if (name && id && image) {
+          dockerContainerInfo.set(name.trim(), {
+            id: id.trim().substring(0, 12), // Short container ID
+            image: image.trim(),
+          });
+        }
+      });
+
     // Parse Docker CPU processes
     const dockerCpuProcesses = dockerCpuResult.stdout
       .split("\n")
       .filter((line) => line.trim())
       .map((line) => {
-        const [name, cpu] = line.split("\t");
+        const [name, cpu, mem] = line.split("\t");
+        const containerName = name?.trim() || "unknown";
+        const info = dockerContainerInfo.get(containerName);
+
+        // Parse memory value
+        const memMatch = mem?.match(/([0-9.]+)([KMG]iB)/);
+        let memBytes = 0;
+        if (memMatch) {
+          memBytes = parseFloat(memMatch[1]);
+          const unit = memMatch[2];
+          if (unit === "GiB") memBytes *= 1024 * 1024 * 1024;
+          else if (unit === "MiB") memBytes *= 1024 * 1024;
+          else if (unit === "KiB") memBytes *= 1024;
+        }
+
         return {
-          name: `[docker] ${name?.trim() || "unknown"}`,
+          name: `[docker] ${containerName}`,
           value: parseFloat(cpu?.replace("%", "") || "0") || 0,
+          pid: info?.id || undefined,
+          user: "docker",
+          image: info?.image,
+          secondaryMetric: memBytes,
         };
       })
       .filter((p) => p.value > 0);
@@ -189,14 +226,27 @@ export async function GET() {
       .filter((line) => line.trim())
       .map((line) => {
         const parts = line.trim().split(/\s+/);
-        const cpu = parseFloat(parts[parts.length - 1]) || 0;
-        const name = parts.slice(0, -1).join(" ") || "unknown";
+        // Format: PID USER COMMAND CPU% MEM%
+        if (parts.length < 5) return null;
+        const pid = parts[0];
+        const user = parts[1];
+        const memPercent = parseFloat(parts[parts.length - 1]) || 0;
+        const cpu = parseFloat(parts[parts.length - 2]) || 0;
+        const name = parts.slice(2, -2).join(" ") || "unknown";
+
+        // Convert memory percentage to bytes
+        const memBytes = (memPercent / 100) * memTotal;
+
         return {
           name: name,
           value: cpu,
+          pid: pid,
+          user: user,
+          secondaryMetric: memBytes,
         };
       })
-      .filter((p) => {
+      .filter((p): p is { name: string; value: number; pid: string; user: string; secondaryMetric: number } => {
+        if (!p) return false;
         // Filter out monitoring commands and low CPU processes
         const monitoringCommands = ['ps', 'docker', 'awk', 'head', 'tail', 'grep', 'sed', 'sort'];
         const isMonitoringCmd = monitoringCommands.some(cmd => p.name === cmd || p.name.startsWith(cmd + ' '));
@@ -213,7 +263,10 @@ export async function GET() {
       .split("\n")
       .filter((line) => line.trim())
       .map((line) => {
-        const [name, mem] = line.split("\t");
+        const [name, mem, cpu] = line.split("\t");
+        const containerName = name?.trim() || "unknown";
+        const info = dockerContainerInfo.get(containerName);
+
         const memMatch = mem?.match(/([0-9.]+)([KMG]iB)/);
         if (!memMatch) return null;
 
@@ -225,13 +278,15 @@ export async function GET() {
         else if (unit === "KiB") memBytes *= 1024;
 
         return {
-          name: `[docker] ${name?.trim() || "unknown"}`,
+          name: `[docker] ${containerName}`,
           value: memBytes,
+          pid: info?.id || undefined,
+          user: "docker",
+          image: info?.image,
+          secondaryMetric: parseFloat(cpu?.replace("%", "") || "0") || 0,
         };
       })
-      .filter(
-        (p): p is { name: string; value: number } => p !== null && p.value > 0
-      );
+      .filter((p) => p !== null && p.value > 0);
 
     // Parse system memory processes
     const systemMemProcesses = memProcessResult.stdout
@@ -239,16 +294,24 @@ export async function GET() {
       .filter((line) => line.trim())
       .map((line) => {
         const parts = line.trim().split(/\s+/);
-        const memPercent = parseFloat(parts[parts.length - 1]) || 0;
-        const name = parts.slice(0, -1).join(" ") || "unknown";
+        // Format: PID USER COMMAND MEM% CPU%
+        if (parts.length < 5) return null;
+        const pid = parts[0];
+        const user = parts[1];
+        const cpuPercent = parseFloat(parts[parts.length - 1]) || 0;
+        const memPercent = parseFloat(parts[parts.length - 2]) || 0;
+        const name = parts.slice(2, -2).join(" ") || "unknown";
         // Convert percentage to bytes based on total memory
         const memBytes = (memPercent / 100) * memTotal;
         return {
           name: name,
           value: memBytes,
+          pid: pid,
+          user: user,
+          secondaryMetric: cpuPercent,
         };
       })
-      .filter((p) => p.value > 0);
+      .filter((p) => p !== null && p.value > 0);
 
     // Combine and sort both Docker and system processes
     const topMemProcesses = [...dockerMemProcesses, ...systemMemProcesses].sort(
@@ -261,6 +324,9 @@ export async function GET() {
       .filter((line) => line.trim())
       .map((line) => {
         const [name, blockIO] = line.split("\t");
+        const containerName = name?.trim() || "unknown";
+        const info = dockerContainerInfo.get(containerName);
+
         if (!blockIO) return null;
         // BlockIO format is like "1.2MB / 3.4MB" (read / write)
         const ioMatch = blockIO.match(
@@ -289,12 +355,15 @@ export async function GET() {
           convertToBytes(writeValue, writeUnit);
 
         return {
-          name: `[docker] ${name?.trim() || "unknown"}`,
+          name: `[docker] ${containerName}`,
           value: totalBytes,
+          pid: info?.id || undefined,
+          user: "docker",
+          image: info?.image,
         };
       })
       .filter(
-        (p): p is { name: string; value: number } => p !== null && p.value > 0
+        (p): p is { name: string; value: number; pid?: string; user: string; image?: string } => p !== null && p.value > 0
       );
 
     // Note: Getting per-process disk I/O for system processes requires root access
